@@ -7,15 +7,14 @@ setup(
     long_description=open('README.rst').read(),
     author='Bouke Haarsma',
     author_email='bouke@haarsma.eu',
-    url='https://github.com/Bouke/django-two-factor-auth',
-    download_url='https://pypi.python.org/pypi/django-two-factor-auth',
+    url='https://github.com/MyBook/django-two-factor-auth',
     license='MIT',
     packages=find_packages(exclude=('example', 'tests')),
     install_requires=[
         'Django>=1.11',
         'django_otp>=0.3.4,<0.99',
         'qrcode>=4.0.0,<6.99',
-        'django-phonenumber-field>=1.1.0,<1.99',
+        'django-phonenumber-field>=1.1.0,<2.3',
         'django-formtools',
     ],
     extras_require={
