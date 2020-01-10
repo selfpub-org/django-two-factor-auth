@@ -10,7 +10,7 @@ from django.conf import settings
 from django.shortcuts import resolve_url
 from django.test import TestCase
 from django.urls import reverse
-from django.utils import six
+from pytest import raises
 
 from .utils import UserMixin
 
@@ -43,8 +43,7 @@ class YubiKeyTest(UserMixin, TestCase):
         # https://code.djangoproject.com/ticket/24903.
         if sys.version_info < (2, 7, 10) or sys.version_info >= (2, 7, 11):
             # Without ValidationService it won't work
-            with six.assertRaisesRegex(self, KeyError, "No ValidationService "
-                                                       "found with name 'default'"):
+            with raises(KeyError, "No ValidationService found with name 'default'"):
                 self.client.post(reverse('two_factor:setup'),
                                  data={'setup_view-current_step': 'method',
                                        'method-method': 'yubikey'})

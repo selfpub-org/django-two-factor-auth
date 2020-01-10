@@ -2,7 +2,6 @@
 
 from django import forms
 from django.test import TestCase
-from django.utils import six
 
 from two_factor.validators import validate_international_phonenumber
 
@@ -30,4 +29,4 @@ class ValidatorsTest(TestCase):
         self.assertIn('number', form.errors)
 
         self.assertEqual(form.errors['number'],
-                         [six.text_type(validate_international_phonenumber.message)])
+                         [validate_international_phonenumber.message])

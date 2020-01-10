@@ -4,7 +4,7 @@ from django.test import TestCase
 from django.test.utils import override_settings
 from django.urls import reverse
 from django.utils import translation
-from django.utils.six.moves.urllib.parse import urlencode
+from urllib.parse import urlencode
 from phonenumber_field.phonenumber import PhoneNumber
 
 from two_factor.gateways.fake import Fake

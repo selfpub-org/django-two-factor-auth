@@ -10,7 +10,6 @@ from django.shortcuts import resolve_url
 from django.test import TestCase
 from django.test.utils import override_settings
 from django.urls import reverse, reverse_lazy
-from django.utils import six
 from django_otp.oath import totp
 from django_otp.util import random_hex
 
@@ -84,7 +83,7 @@ class PhoneSetupTest(UserMixin, TestCase):
                                'setup-method': 'call'})
         self.assertEqual(
             response.context_data['wizard']['form'].errors,
-            {'number': [six.text_type(validate_international_phonenumber.message)]})
+            {'number': [validate_international_phonenumber.message]})
 
     @mock.patch('formtools.wizard.views.WizardView.get_context_data')
     def test_success_url_as_url(self, get_context_data):
