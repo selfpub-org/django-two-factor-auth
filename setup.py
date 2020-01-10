@@ -14,7 +14,7 @@ setup(
         'Django>=1.11',
         'django_otp>=0.6.0,<0.99',
         'qrcode>=4.0.0,<6.99',
-        'django-phonenumber-field>=1.1.0,<4',
+        'django-phonenumber-field>=1.1.0,<4.1',
         'phonenumbers>=7.0.9,<9',
         'django-formtools',
     ],
