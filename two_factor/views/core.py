@@ -1,7 +1,10 @@
 import logging
+import time
 import warnings
 from base64 import b32encode
 from binascii import unhexlify
+from http import cookies
+from uuid import uuid4
 
 import django_otp
 import qrcode
@@ -10,23 +13,29 @@ from django.conf import settings
 from django.contrib.auth import REDIRECT_FIELD_NAME, login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
+from django.contrib.auth.views import SuccessURLAllowedHostsMixin
 from django.contrib.sites.shortcuts import get_current_site
-from django.forms import Form
-from django.http import Http404, HttpResponse
+from django.core.signing import BadSignature
+from django.forms import Form, ValidationError
+from django.http import Http404, HttpResponse, HttpResponseRedirect
 from django.shortcuts import redirect, resolve_url
 from django.urls import reverse
+from django.utils.decorators import method_decorator
+from django.utils.functional import cached_property
 from django.utils.http import is_safe_url
 from django.utils.module_loading import import_string
+from django.utils.translation import gettext as _
 from django.views.decorators.cache import never_cache
+from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.debug import sensitive_post_parameters
 from django.views.generic import DeleteView, FormView, TemplateView
 from django.views.generic.base import View
+from django_otp import devices_for_user
 from django_otp.decorators import otp_required
 from django_otp.plugins.otp_static.models import StaticDevice, StaticToken
-from django_otp.util import random_hex
 
 from two_factor import signals
-from two_factor.models import get_available_methods
+from two_factor.models import get_available_methods, random_hex_str
 from two_factor.utils import totp_digits
 
 from ..forms import (
@@ -35,7 +44,10 @@ from ..forms import (
 )
 from ..models import PhoneDevice, get_available_phone_methods
 from ..utils import backup_phones, default_device, get_otpauth_url
-from .utils import IdempotentSessionWizardView, class_view_decorator
+from .utils import (
+    IdempotentSessionWizardView, class_view_decorator,
+    get_remember_device_cookie, validate_remember_device_cookie,
+)
 
 try:
     from otp_yubikey.models import ValidationService, RemoteYubikeyDevice
@@ -45,10 +57,12 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+REMEMBER_COOKIE_PREFIX = getattr(settings, 'TWO_FACTOR_REMEMBER_COOKIE_PREFIX', 'remember-cookie_')
+
 
 @class_view_decorator(sensitive_post_parameters())
 @class_view_decorator(never_cache)
-class LoginView(IdempotentSessionWizardView):
+class LoginView(SuccessURLAllowedHostsMixin, IdempotentSessionWizardView):
     """
     View for handling the login process, including OTP verification.
 
@@ -69,13 +83,29 @@ class LoginView(IdempotentSessionWizardView):
         'token': False,
         'backup': False,
     }
+    redirect_authenticated_user = False
+    storage_name = 'two_factor.views.utils.LoginStorage'
 
     def has_token_step(self):
-        return default_device(self.get_user())
+        return (
+            default_device(self.get_user()) and
+            not self.remember_agent
+        )
 
     def has_backup_step(self):
-        return default_device(self.get_user()) and \
-            'token' not in self.storage.validated_step_data
+        return (
+            default_device(self.get_user()) and
+            'token' not in self.storage.validated_step_data and
+            not self.remember_agent
+        )
+
+    @cached_property
+    def expired(self):
+        login_timeout = getattr(settings, 'TWO_FACTOR_LOGIN_TIMEOUT', 600)
+        if login_timeout == 0:
+            return False
+        expiration_time = self.storage.data.get("authentication_time", 0) + login_timeout
+        return int(time.time()) > expiration_time
 
     condition_dict = {
         'token': has_token_step,
@@ -84,20 +114,35 @@ class LoginView(IdempotentSessionWizardView):
     redirect_field_name = REDIRECT_FIELD_NAME
 
     def __init__(self, **kwargs):
-        super(LoginView, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.user_cache = None
         self.device_cache = None
+        self.cookies_to_delete = []
+        self.show_timeout_error = False
 
     def post(self, *args, **kwargs):
         """
         The user can select a particular device to challenge, being the backup
         devices added to the account.
         """
+        wizard_goto_step = self.request.POST.get('wizard_goto_step', None)
+
+        if wizard_goto_step == 'auth':
+            self.storage.reset()
+
+        if self.expired and self.steps.current != 'auth':
+            logger.info("User's authentication flow has timed out. The user "
+                        "has been redirected to the initial auth form.")
+            self.storage.reset()
+            self.show_timeout_error = True
+            return self.render_goto_step('auth')
+
         # Generating a challenge doesn't require to validate the form.
         if 'challenge_device' in self.request.POST:
             return self.render_goto_step('token')
 
-        return super(LoginView, self).post(*args, **kwargs)
+        response = super().post(*args, **kwargs)
+        return self.delete_cookies_from_response(response)
 
     def done(self, form_list, **kwargs):
         """
@@ -105,19 +150,64 @@ class LoginView(IdempotentSessionWizardView):
         """
         login(self.request, self.get_user())
 
+        redirect_to = self.get_success_url()
+
+        device = getattr(self.get_user(), 'otp_device', None)
+        response = redirect(redirect_to)
+
+        if device:
+            signals.user_verified.send(sender=__name__, request=self.request,
+                                       user=self.get_user(), device=device)
+
+            # Set a remember cookie if activated
+            form_obj = self.get_form(step=self.steps.current, data=self.storage.get_step_data(self.steps.current))
+            if getattr(settings, 'TWO_FACTOR_REMEMBER_COOKIE_AGE', None) and \
+                    'remember' in form_obj.fields and form_obj['remember'].value():
+                # choose a unique cookie key to remember devices for multiple users in the same browser
+                cookie_key = REMEMBER_COOKIE_PREFIX + str(uuid4())
+                cookie_value = get_remember_device_cookie(user=self.get_user(),
+                                                          otp_device_id=device.persistent_id)
+                if 'samesite' in cookies.Morsel._reserved:
+                    response.set_cookie(cookie_key, cookie_value,
+                                        max_age=settings.TWO_FACTOR_REMEMBER_COOKIE_AGE,
+                                        domain=getattr(settings, 'TWO_FACTOR_REMEMBER_COOKIE_DOMAIN', None),
+                                        path=getattr(settings, 'TWO_FACTOR_REMEMBER_COOKIE_PATH', '/'),
+                                        secure=getattr(settings, 'TWO_FACTOR_REMEMBER_COOKIE_SECURE', False),
+                                        httponly=getattr(settings, 'TWO_FACTOR_REMEMBER_COOKIE_HTTPONLY', True),
+                                        samesite=getattr(settings, 'TWO_FACTOR_REMEMBER_COOKIE_SAMESITE', 'Lax'),
+                                        )
+                else:
+                    # Backwards compatibility for Django < 2.1a1
+                    response.set_cookie(cookie_key, cookie_value,
+                                        max_age=settings.TWO_FACTOR_REMEMBER_COOKIE_AGE,
+                                        domain=getattr(settings, 'TWO_FACTOR_REMEMBER_COOKIE_DOMAIN', None),
+                                        path=getattr(settings, 'TWO_FACTOR_REMEMBER_COOKIE_PATH', '/'),
+                                        secure=getattr(settings, 'TWO_FACTOR_REMEMBER_COOKIE_SECURE', False),
+                                        httponly=getattr(settings, 'TWO_FACTOR_REMEMBER_COOKIE_HTTPONLY', True),
+                                        )
+
+        return response
+
+    # Copied from django.conrib.auth.views.LoginView (Branch: stable/1.11.x)
+    # https://github.com/django/django/blob/58df8aa40fe88f753ba79e091a52f236246260b3/django/contrib/auth/views.py#L63
+    def get_success_url(self):
+        url = self.get_redirect_url()
+        return url or resolve_url(settings.LOGIN_REDIRECT_URL)
+
+    # Copied from django.conrib.auth.views.LoginView (Branch: stable/1.11.x)
+    # https://github.com/django/django/blob/58df8aa40fe88f753ba79e091a52f236246260b3/django/contrib/auth/views.py#L67
+    def get_redirect_url(self):
+        """Return the user-originating redirect URL if it's safe."""
         redirect_to = self.request.POST.get(
             self.redirect_field_name,
             self.request.GET.get(self.redirect_field_name, '')
         )
-
-        if not is_safe_url(url=redirect_to, allowed_hosts=[self.request.get_host()]):
-            redirect_to = resolve_url(settings.LOGIN_REDIRECT_URL)
-
-        device = getattr(self.get_user(), 'otp_device', None)
-        if device:
-            signals.user_verified.send(sender=__name__, request=self.request,
-                                       user=self.get_user(), device=device)
-        return redirect(redirect_to)
+        url_is_safe = is_safe_url(
+            url=redirect_to,
+            allowed_hosts=self.get_success_url_allowed_hosts(),
+            require_https=self.request.is_secure(),
+        )
+        return redirect_to if url_is_safe else ''
 
     def get_form_kwargs(self, step=None):
         """
@@ -133,6 +223,54 @@ class LoginView(IdempotentSessionWizardView):
                 'initial_device': self.get_device(step),
             }
         return {}
+
+    def get_done_form_list(self):
+        """
+        Return the forms that should be processed during the final step
+        """
+        # Intentionally do not process the auth form on the final step. We
+        # haven't stored this data, and it isn't required to login the user
+        form_list = self.get_form_list()
+        form_list.pop('auth')
+        return form_list
+
+    def process_step(self, form):
+        """
+        Process an individual step in the flow
+        """
+        # To prevent saving any private auth data to the session store, we
+        # validate the authentication form, determine the resulting user, then
+        # only store the minimum needed to login that user (the user's primary
+        # key and the backend used)
+        if self.steps.current == 'auth':
+            user = form.is_valid() and form.user_cache
+            self.storage.reset()
+            self.storage.authenticated_user = user
+            self.storage.data["authentication_time"] = int(time.time())
+
+            # By returning None when the user clicks the "back" button to the
+            # auth step the form will be blank with validation warnings
+            return None
+
+        return super().process_step(form)
+
+    def process_step_files(self, form):
+        """
+        Process the files submitted from a specific test
+        """
+        if self.steps.current == 'auth':
+            return {}
+        return super().process_step_files(form)
+
+    def get_form(self, *args, **kwargs):
+        """
+        Returns the form for the step
+        """
+        form = super().get_form(*args, **kwargs)
+        if self.show_timeout_error:
+            form.cleaned_data = getattr(form, 'cleaned_data', {})
+            form.add_error(None, ValidationError(_('Your session has timed out. Please login again.')))
+        return form
 
     def get_device(self, step=None):
         """
@@ -161,7 +299,7 @@ class LoginView(IdempotentSessionWizardView):
         """
         if self.steps.current == 'token':
             self.get_device().generate_challenge()
-        return super(LoginView, self).render(form, **kwargs)
+        return super().render(form, **kwargs)
 
     def get_user(self):
         """
@@ -169,16 +307,14 @@ class LoginView(IdempotentSessionWizardView):
         if not a valid user; see also issue #65.
         """
         if not self.user_cache:
-            form_obj = self.get_form(step='auth',
-                                     data=self.storage.get_step_data('auth'))
-            self.user_cache = form_obj.is_valid() and form_obj.user_cache
+            self.user_cache = self.storage.authenticated_user
         return self.user_cache
 
     def get_context_data(self, form, **kwargs):
         """
         Adds user's default and backup OTP devices to the context.
         """
-        context = super(LoginView, self).get_context_data(form, **kwargs)
+        context = super().get_context_data(form, **kwargs)
         if self.steps.current == 'token':
             context['device'] = self.get_device()
             context['other_devices'] = [
@@ -199,6 +335,59 @@ class LoginView(IdempotentSessionWizardView):
                 DeprecationWarning)
             context['cancel_url'] = resolve_url(settings.LOGOUT_URL)
         return context
+
+    @cached_property
+    def remember_agent(self):
+        """
+        Returns True if a user, browser and device is remembered using the remember cookie.
+        """
+        if not getattr(settings, 'TWO_FACTOR_REMEMBER_COOKIE_AGE', None):
+            return False
+
+        user = self.get_user()
+        devices = list(devices_for_user(user))
+        for key, value in self.request.COOKIES.items():
+            if key.startswith(REMEMBER_COOKIE_PREFIX) and value:
+                for device in devices:
+                    verify_is_allowed, extra = device.verify_is_allowed()
+                    try:
+                        if verify_is_allowed and validate_remember_device_cookie(
+                                value,
+                                user=user,
+                                otp_device_id=device.persistent_id
+                        ):
+                            user.otp_device = device
+                            device.throttle_reset()
+                            return True
+                    except BadSignature:
+                        device.throttle_increment()
+                        # Remove remember cookies with invalid signature to omit unnecessary throttling
+                        self.cookies_to_delete.append(key)
+        return False
+
+    def delete_cookies_from_response(self, response):
+        """
+        Deletes the cookies_to_delete in the response
+        """
+        for cookie in self.cookies_to_delete:
+            response.delete_cookie(cookie)
+        return response
+
+    # Copied from django.conrib.auth.views.LoginView  (Branch: stable/1.11.x)
+    # https://github.com/django/django/blob/58df8aa40fe88f753ba79e091a52f236246260b3/django/contrib/auth/views.py#L49
+    @method_decorator(sensitive_post_parameters())
+    @method_decorator(csrf_protect)
+    @method_decorator(never_cache)
+    def dispatch(self, request, *args, **kwargs):
+        if self.redirect_authenticated_user and self.request.user.is_authenticated:
+            redirect_to = self.get_success_url()
+            if redirect_to == self.request.path:
+                raise ValueError(
+                    "Redirection loop for authenticated user detected. Check that "
+                    "your LOGIN_REDIRECT_URL doesn't point to a login page."
+                )
+            return HttpResponseRedirect(redirect_to)
+        return super().dispatch(request, *args, **kwargs)
 
 
 @class_view_decorator(never_cache)
@@ -250,13 +439,13 @@ class SetupView(IdempotentSessionWizardView):
         """
         if default_device(self.request.user):
             return redirect(self.success_url)
-        return super(SetupView, self).get(request, *args, **kwargs)
+        return super().get(request, *args, **kwargs)
 
     def get_form_list(self):
         """
         Check if there is only one method, then skip the MethodForm from form_list
         """
-        form_list = super(SetupView, self).get_form_list()
+        form_list = super().get_form_list()
         available_methods = get_available_methods()
         if len(available_methods) == 1:
             form_list.pop('method', None)
@@ -276,7 +465,7 @@ class SetupView(IdempotentSessionWizardView):
             except Exception:
                 logger.exception("Could not generate challenge")
                 kwargs["challenge_succeeded"] = False
-        return super(SetupView, self).render_next_step(form, **kwargs)
+        return super().render_next_step(form, **kwargs)
 
     def done(self, form_list, **kwargs):
         """
@@ -354,12 +543,12 @@ class SetupView(IdempotentSessionWizardView):
         self.storage.extra_data.setdefault('keys', {})
         if step in self.storage.extra_data['keys']:
             return self.storage.extra_data['keys'].get(step)
-        key = random_hex(20).decode('ascii')
+        key = random_hex_str(20)
         self.storage.extra_data['keys'][step] = key
         return key
 
     def get_context_data(self, form, **kwargs):
-        context = super(SetupView, self).get_context_data(form, **kwargs)
+        context = super().get_context_data(form, **kwargs)
         if self.steps.current == 'generator':
             key = self.get_key('generator')
             rawkey = unhexlify(key.encode('ascii'))
@@ -377,7 +566,7 @@ class SetupView(IdempotentSessionWizardView):
         if hasattr(form, 'metadata'):
             self.storage.extra_data.setdefault('forms', {})
             self.storage.extra_data['forms'][self.steps.current] = form.metadata
-        return super(SetupView, self).process_step(form)
+        return super().process_step(form)
 
     def get_form_metadata(self, step):
         self.storage.extra_data.setdefault('forms', {})
@@ -404,7 +593,7 @@ class BackupTokensView(FormView):
         return self.request.user.staticdevice_set.get_or_create(name='backup')[0]
 
     def get_context_data(self, **kwargs):
-        context = super(BackupTokensView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
         context['device'] = self.get_device()
         return context
 
@@ -445,7 +634,7 @@ class PhoneSetupView(IdempotentSessionWizardView):
         """
         if not get_available_phone_methods():
             return redirect(self.success_url)
-        return super(PhoneSetupView, self).get(request, *args, **kwargs)
+        return super().get(request, *args, **kwargs)
 
     def done(self, form_list, **kwargs):
         """
@@ -461,7 +650,7 @@ class PhoneSetupView(IdempotentSessionWizardView):
         next_step = self.steps.next
         if next_step == 'validation':
             self.get_device().generate_challenge()
-        return super(PhoneSetupView, self).render_next_step(form, **kwargs)
+        return super().render_next_step(form, **kwargs)
 
     def get_form_kwargs(self, step=None):
         """
@@ -484,13 +673,13 @@ class PhoneSetupView(IdempotentSessionWizardView):
         The key is preserved between steps and stored as ascii in the session.
         """
         if self.key_name not in self.storage.extra_data:
-            key = random_hex(20).decode('ascii')
+            key = random_hex_str(20)
             self.storage.extra_data[self.key_name] = key
         return self.storage.extra_data[self.key_name]
 
     def get_context_data(self, form, **kwargs):
         kwargs.setdefault('cancel_url', resolve_url(self.success_url))
-        return super(PhoneSetupView, self).get_context_data(form, **kwargs)
+        return super().get_context_data(form, **kwargs)
 
 
 @class_view_decorator(never_cache)
@@ -538,6 +727,9 @@ class QRGeneratorView(View):
         'SVG': 'image/svg+xml; charset=utf-8',
     }
 
+    def get_issuer(self):
+        return get_current_site(self.request).name
+
     def get(self, request, *args, **kwargs):
         # Get the data from the session
         try:
@@ -555,7 +747,7 @@ class QRGeneratorView(View):
             username = self.request.user.username
 
         otpauth_url = get_otpauth_url(accountname=username,
-                                      issuer=get_current_site(self.request).name,
+                                      issuer=self.get_issuer(),
                                       secret=key,
                                       digits=totp_digits())
 

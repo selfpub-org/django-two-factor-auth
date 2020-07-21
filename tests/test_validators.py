@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 from django import forms
 from django.test import TestCase
 
@@ -29,4 +27,4 @@ class ValidatorsTest(TestCase):
         self.assertIn('number', form.errors)
 
         self.assertEqual(form.errors['number'],
-                         [validate_international_phonenumber.message])
+                         [str(validate_international_phonenumber.message)])

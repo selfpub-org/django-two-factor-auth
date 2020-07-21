@@ -1,18 +1,19 @@
-# -*- coding: utf-8 -*-
-from __future__ import unicode_literals
-
 import sys
 import unittest
+from unittest import mock
 
-from django.test import TestCase
+from django.contrib.auth.hashers import make_password
+from django.test import override_settings, TestCase
 from urllib.parse import parse_qsl, urlparse
-from django_otp.util import random_hex
 
 from two_factor.models import PhoneDevice, random_hex_str
 from two_factor.utils import (
     backup_phones, default_device, get_otpauth_url, totp_digits,
 )
-
+from two_factor.views.utils import (
+    get_remember_device_cookie, salted_hmac_sha256,
+    validate_remember_device_cookie,
+)
 from .utils import UserMixin
 
 
@@ -21,25 +22,23 @@ class UtilsTest(UserMixin, TestCase):
         user = self.create_user()
         self.assertEqual(default_device(user), None)
 
-        user.phonedevice_set.create(name='backup', number='+1')
+        user.phonedevice_set.create(name='backup', number='+12024561111')
         self.assertEqual(default_device(user), None)
 
-        default = user.phonedevice_set.create(name='default', number='+1')
+        default = user.phonedevice_set.create(name='default', number='+12024561111')
         self.assertEqual(default_device(user).pk, default.pk)
 
     def test_backup_phones(self):
         self.assertQuerysetEqual(list(backup_phones(None)),
                                  list(PhoneDevice.objects.none()))
         user = self.create_user()
-        user.phonedevice_set.create(name='default', number='+1')
-        backup = user.phonedevice_set.create(name='backup', number='+1')
+        user.phonedevice_set.create(name='default', number='+12024561111')
+        backup = user.phonedevice_set.create(name='backup', number='+12024561111')
         phones = backup_phones(user)
 
         self.assertEqual(len(phones), 1)
         self.assertEqual(phones[0].pk, backup.pk)
 
-    @unittest.skipIf((3, 2) <= sys.version_info < (3, 3), "Python 3.2's urlparse is broken")
-    @unittest.skipIf(sys.version_info < (2, 7), "Python 2.6 not supported")
     def test_get_otpauth_url(self):
         for num_digits in (6, 8):
             self.assertEqualUrl(
@@ -76,7 +75,6 @@ class UtilsTest(UserMixin, TestCase):
         """
         Asserts whether the URLs are canonically equal.
         """
-
         lhs = urlparse(lhs)
         rhs = urlparse(rhs)
         self.assertEqual(lhs.scheme, rhs.scheme)
@@ -104,7 +102,40 @@ class UtilsTest(UserMixin, TestCase):
         # hex string must be 40 characters long. If cannot be longer, because CharField max_length=40
         self.assertEqual(len(h), 40)
 
-        # Added tests to verify that we can safely remove IF statement from random_hex_str function
-        hh = random_hex().decode('utf-8')
-        self.assertIsInstance(hh, str)
-        self.assertEqual(len(hh), 40)
+    @override_settings(
+        TWO_FACTOR_REMEMBER_COOKIE_AGE=60 * 60,
+    )
+    def test_create_and_validate_remember_cookie(self):
+        user = mock.Mock()
+        user.pk = 123
+        user.password = make_password("xx")
+        cookie_value = get_remember_device_cookie(
+            user=user, otp_device_id="SomeModel/33"
+        )
+        self.assertEqual(len(cookie_value.split(':')), 3)
+        validation_result = validate_remember_device_cookie(
+            cookie=cookie_value,
+            user=user,
+            otp_device_id="SomeModel/33",
+        )
+        self.assertTrue(validation_result)
+
+    def test_wrong_device_hash(self):
+        user = mock.Mock()
+        user.pk = 123
+        user.password = make_password("xx")
+
+        cookie_value = get_remember_device_cookie(
+            user=user, otp_device_id="SomeModel/33"
+        )
+        validation_result = validate_remember_device_cookie(
+            cookie=cookie_value,
+            user=user,
+            otp_device_id="SomeModel/34",
+        )
+        self.assertFalse(validation_result)
+
+    def test_salted_hmac_sha256(self):
+        hmac_with_secret = salted_hmac_sha256("blah", "blah", "my-new-secret")
+        hmac_without_secret = salted_hmac_sha256("blah", "blah")
+        self.assertNotEqual(hmac_with_secret, hmac_without_secret)

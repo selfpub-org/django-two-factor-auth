@@ -2,8 +2,9 @@ from binascii import unhexlify
 from time import time
 
 from django import forms
+from django.conf import settings
 from django.forms import Form, ModelForm
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django_otp.forms import OTPAuthenticationFormMixin
 from django_otp.oath import totp
 from django_otp.plugins.otp_totp.models import TOTPDevice
@@ -26,7 +27,7 @@ class MethodForm(forms.Form):
                                widget=forms.RadioSelect)
 
     def __init__(self, **kwargs):
-        super(MethodForm, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.fields['method'].choices = get_available_methods()
 
 
@@ -40,7 +41,7 @@ class PhoneNumberMethodForm(ModelForm):
         fields = 'number', 'method',
 
     def __init__(self, **kwargs):
-        super(PhoneNumberMethodForm, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.fields['method'].choices = get_available_phone_methods()
 
 
@@ -62,7 +63,7 @@ class DeviceValidationForm(forms.Form):
     }
 
     def __init__(self, device, **args):
-        super(DeviceValidationForm, self).__init__(**args)
+        super().__init__(**args)
         self.device = device
 
     def clean_token(self):
@@ -81,7 +82,7 @@ class YubiKeyDeviceForm(DeviceValidationForm):
 
     def clean_token(self):
         self.device.public_id = self.cleaned_data['token'][:-32]
-        return super(YubiKeyDeviceForm, self).clean_token()
+        return super().clean_token()
 
 
 class TOTPDeviceForm(forms.Form):
@@ -92,7 +93,7 @@ class TOTPDeviceForm(forms.Form):
     }
 
     def __init__(self, key, user, metadata=None, **kwargs):
-        super(TOTPDeviceForm, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.key = key
         self.tolerance = 1
         self.t0 = 0
@@ -159,7 +160,7 @@ class AuthenticationTokenForm(OTPAuthenticationFormMixin, Form):
         be verified against all devices, it is not limited to the given
         device.
         """
-        super(AuthenticationTokenForm, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.user = user
 
         # YubiKey generates a OTP of 44 characters (not digits). So if the
@@ -168,6 +169,24 @@ class AuthenticationTokenForm(OTPAuthenticationFormMixin, Form):
         if RemoteYubikeyDevice and YubikeyDevice and \
                 isinstance(initial_device, (RemoteYubikeyDevice, YubikeyDevice)):
             self.fields['otp_token'] = forms.CharField(label=_('YubiKey'), widget=forms.PasswordInput())
+
+        # Add a field to remeber this browser.
+        if getattr(settings, 'TWO_FACTOR_REMEMBER_COOKIE_AGE', None):
+            if settings.TWO_FACTOR_REMEMBER_COOKIE_AGE < 3600:
+                minutes = int(settings.TWO_FACTOR_REMEMBER_COOKIE_AGE / 60)
+                label = _("Don't ask again on this device for %(minutes)i minutes") % {'minutes': minutes}
+            elif settings.TWO_FACTOR_REMEMBER_COOKIE_AGE < 3600 * 24:
+                hours = int(settings.TWO_FACTOR_REMEMBER_COOKIE_AGE / 3600)
+                label = _("Don't ask again on this device for %(hours)i hours") % {'hours': hours}
+            else:
+                days = int(settings.TWO_FACTOR_REMEMBER_COOKIE_AGE / 3600 / 24)
+                label = _("Don't ask again on this device for %(days)i days") % {'days': days}
+
+            self.fields['remember'] = forms.BooleanField(
+                required=False,
+                initial=True,
+                label=label
+            )
 
     def clean(self):
         self.clean_otp(self.user)

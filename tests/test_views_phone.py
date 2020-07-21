@@ -1,9 +1,4 @@
-# -*- coding: utf-8 -*-
-
-try:
-    from unittest import mock
-except ImportError:
-    import mock
+from unittest import mock
 
 from django.conf import settings
 from django.shortcuts import resolve_url
@@ -11,9 +6,8 @@ from django.test import TestCase
 from django.test.utils import override_settings
 from django.urls import reverse, reverse_lazy
 from django_otp.oath import totp
-from django_otp.util import random_hex
 
-from two_factor.models import PhoneDevice
+from two_factor.models import PhoneDevice, random_hex_str
 from two_factor.utils import backup_phones
 from two_factor.validators import validate_international_phonenumber
 from two_factor.views.core import PhoneDeleteView, PhoneSetupView
@@ -27,7 +21,7 @@ from .utils import UserMixin
 )
 class PhoneSetupTest(UserMixin, TestCase):
     def setUp(self):
-        super(PhoneSetupTest, self).setUp()
+        super().setUp()
         self.user = self.create_user()
         self.enable_otp()
         self.login_user()
@@ -83,7 +77,7 @@ class PhoneSetupTest(UserMixin, TestCase):
                                'setup-method': 'call'})
         self.assertEqual(
             response.context_data['wizard']['form'].errors,
-            {'number': [validate_international_phonenumber.message]})
+            {'number': [str(validate_international_phonenumber.message)]})
 
     @mock.patch('formtools.wizard.views.WizardView.get_context_data')
     def test_success_url_as_url(self, get_context_data):
@@ -140,10 +134,10 @@ class PhoneSetupTest(UserMixin, TestCase):
 
 class PhoneDeleteTest(UserMixin, TestCase):
     def setUp(self):
-        super(PhoneDeleteTest, self).setUp()
+        super().setUp()
         self.user = self.create_user()
-        self.backup = self.user.phonedevice_set.create(name='backup', method='sms', number='+1')
-        self.default = self.user.phonedevice_set.create(name='default', method='call', number='+1')
+        self.backup = self.user.phonedevice_set.create(name='backup', method='sms', number='+12024561111')
+        self.default = self.user.phonedevice_set.create(name='default', method='call', number='+12024561111')
         self.login_user()
 
     def test_delete(self):
@@ -182,7 +176,7 @@ class PhoneDeviceTest(UserMixin, TestCase):
     def test_verify(self):
         for no_digits in (6, 8):
             with self.settings(TWO_FACTOR_TOTP_DIGITS=no_digits):
-                device = PhoneDevice(key=random_hex().decode())
+                device = PhoneDevice(key=random_hex_str())
                 self.assertFalse(device.verify_token(-1))
                 self.assertFalse(device.verify_token('foobar'))
                 self.assertTrue(device.verify_token(totp(device.bin_key, digits=no_digits)))
@@ -195,7 +189,7 @@ class PhoneDeviceTest(UserMixin, TestCase):
         """
         for no_digits in (6, 8):
             with self.settings(TWO_FACTOR_TOTP_DIGITS=no_digits):
-                device = PhoneDevice(key=random_hex().decode())
+                device = PhoneDevice(key=random_hex_str())
                 self.assertTrue(device.verify_token(str(totp(device.bin_key, digits=no_digits))))
 
     def test_unicode(self):

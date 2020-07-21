@@ -1,4 +1,53 @@
-## [Unreleased]
+## 1.12 - 2020-07-08
+### Added
+- It is possible to set a timeout between a user authenticiating in the
+  `LoginView` and them needing to re-authenticate. By default this is 10
+  minutes.
+
+### Removed
+- The final step in the `LoginView` no longer re-validates a user's credentials.
+- Django 1.11 support.
+
+### Changed
+- Security Fix: `LoginView` no longer stores credentials in plaintext in the
+  session store.
+
+## 1.11.0 - 2020-03-13
+### Added
+
+*Nothing has been added for this version*
+
+### Removed
+- MiddlewareMixin
+- Python 3.4 support
+- Django 2.1 support
+- `mock` dependency
+
+### Changed
+- `extra_requires` are now listed in lowercase. This is to workaround a bug in `pip`.
+- Use `trimmed` option on `blocktrans` to avoid garbage newlines in translations.
+- `random_hex` from `django_otp` 0.8.0 will always return a `str`, don't try to decode it.
+
+## 1.10.0 - 2019-12-13
+### Added
+- Support for Django 3.0.
+- Optionally install full or light phonenumbers library.
+
+### Removed
+- Python 2 support.
+
+### Changed
+- Updated translations.
+
+## 1.9.1 - 2019-07-07
+### Changed
+- 1.9.0 got pushed with incorrect changelog, no other changes.
+
+## 1.9.0 - 2019-07-07
+### Added
+- Support for Django 2.2.
+- Ability to create `PhoneDevice` from Django admin.
+- Support for Python 3.7.
 
 ## 1.8.0 - 2018-08-03
 ### Added

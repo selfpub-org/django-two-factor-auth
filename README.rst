@@ -6,6 +6,10 @@ Django Two-Factor Authentication
     :alt: Build Status
     :target: https://travis-ci.org/Bouke/django-two-factor-auth
 
+.. image:: https://github.com/Bouke/django-two-factor-auth/workflows/build/badge.svg?branch=master
+    :alt: Build Status
+    :target: https://github.com/Bouke/django-two-factor-auth/actions
+
 .. image:: https://codecov.io/gh/Bouke/django-two-factor-auth/branch/master/graph/badge.svg
     :alt: Test Coverage
     :target: https://codecov.io/gh/Bouke/django-two-factor-auth
@@ -22,11 +26,10 @@ allowing users to authenticate through call, text messages (SMS), by using a
 token generator app like Google Authenticator or a YubiKey_ hardware token
 generator (optional).
 
-I would love to hear your feedback on this package. If you run into
-problems, please file an issue on GitHub, or contribute to the project by
-forking the repository and sending some pull requests. The package is
-translated into English, Dutch and other languages. Please contribute your own
-language using Transifex_.
+If you run into problems, please file an issue on GitHub, or contribute to the
+project by forking the repository and sending some pull requests. The package
+is translated into English, Dutch and other languages. Please contribute your
+own language using Transifex_.
 
 Test drive this app through the online `example app`_, hosted by Heroku_. It
 demos most features except the Twilio integration. The example also includes
@@ -35,8 +38,8 @@ user. Although the package is optional, it improves account security control
 over ``django.contrib.sessions``.
 
 Compatible with modern Django versions. At the moment of writing that's
-including 1.11 and 2.0 on Python 2.7, 3.4, 3.5, 3.6 and 3.7. Documentation is
-available at `readthedocs.org`_.
+including 2.2, and 3.0 on Python 3.5, 3.6, 3.7 and 3.8.
+Documentation is available at `readthedocs.org`_.
 
 
 Installation
@@ -47,7 +50,7 @@ Refer to the `installation instructions`_ in the documentation.
 Getting help
 ============
 
-For general questions regarding this package, please hop over to Stack 
+For general questions regarding this package, please hop over to Stack
 Overflow. If you think there is an issue with this package; check if the
 issue is already listed (either open or closed), and file an issue if
 it's not.
@@ -131,3 +134,5 @@ The project is licensed under the MIT license.
 .. _Yubikey: https://www.yubico.com/products/yubikey-hardware/
 .. _`Hynek's Sharing Your Labor of Love: PyPI Quick And Dirty`:
    https://hynek.me/articles/sharing-your-labor-of-love-pypi-quick-and-dirty/
+.. _`issue 239`:
+   https://github.com/Bouke/django-two-factor-auth/issues/239

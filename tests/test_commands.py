@@ -1,6 +1,5 @@
-# -*- coding: utf-8 -*-
-
 import os
+from io import StringIO
 
 from django.core.management import CommandError, call_command
 from django.test import TestCase
@@ -53,7 +52,7 @@ class StatusCommandTest(UserMixin, TestCase):
         return self.assertRaisesMessage(err_type, err_message)
 
     def setUp(self):
-        super(StatusCommandTest, self).setUp()
+        super().setUp()
         os.environ['DJANGO_COLORS'] = 'nocolor'
 
     def test_raises(self):
